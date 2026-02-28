@@ -31,9 +31,14 @@ if (dbType === 'mysql') {
         process.exit(1);
     }
 } else {
-    // Default to PostgreSQL
+    // Default to PostgreSQL - Railway requires SSL but with rejectUnauthorized: false
     pool = process.env.DATABASE_URL
-        ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+        ? new Pool({ 
+            connectionString: process.env.DATABASE_URL,
+            ssl: process.env.DATABASE_URL.includes('railway') 
+              ? { rejectUnauthorized: false }
+              : false
+          })
         : new Pool({
             host: process.env.DB_HOST,
             user: process.env.DB_USER,
