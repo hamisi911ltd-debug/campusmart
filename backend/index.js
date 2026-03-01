@@ -17,7 +17,7 @@ const initSchema = async () => {
         console.log('   Run: node init-database-mysql.js to initialize schema');
         return;
     }
-    
+
     try {
         console.log('Ensuring database schema is up to date...');
         await db.query(`CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, full_name VARCHAR(255), email VARCHAR(255) UNIQUE, password VARCHAR(255), whatsapp VARCHAR(20), avatar_url TEXT, is_admin BOOLEAN DEFAULT FALSE, is_banned BOOLEAN DEFAULT FALSE, is_verified BOOLEAN DEFAULT FALSE, verified_until TIMESTAMP, boost_type VARCHAR(50), last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
@@ -57,10 +57,10 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-    origin: function(origin, callback) {
+    origin: function (origin, callback) {
         // Allow requests with no origin (mobile apps, Postman, etc.)
         if (!origin) return callback(null, true);
-        
+
         if (allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
         } else {
@@ -77,7 +77,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 // Handle preflight requests explicitly
-app.options('*', cors());
+app.options('(.*)', cors());
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET;
