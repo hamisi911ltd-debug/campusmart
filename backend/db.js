@@ -2,6 +2,9 @@ const { Pool } = require('pg');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
+// FIX for 'self-signed certificate' error on some networks when connecting to Supabase
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 /**
  * DATABASE ABSTRACTION LAYER
  * This module ensures compatibility between PostgreSQL (Development/Heroku/Railway)
@@ -33,12 +36,15 @@ if (dbType === 'mysql') {
 } else {
     // Default to PostgreSQL - Railway requires SSL configuration
     if (process.env.DATABASE_URL) {
-        // Use DATABASE_URL with SSL configuration
-        const sslConfig = process.env.NODE_ENV === 'production' || process.env.DATABASE_URL.includes('railway')
-            ? { rejectUnauthorized: false, sslmode: 'require' }
+        // Use DATABASE_URL with SSL configuration - Supabase (direct/pooler) & Railway require SSL
+        const sslConfig = process.env.NODE_ENV === 'production' ||
+            process.env.DATABASE_URL.includes('railway') ||
+            process.env.DATABASE_URL.includes('supabase') ||
+            process.env.DATABASE_URL.includes('pooler')
+            ? { rejectUnauthorized: false }
             : false;
-        
-        pool = new Pool({ 
+
+        pool = new Pool({
             connectionString: process.env.DATABASE_URL,
             ssl: sslConfig
         });
