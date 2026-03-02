@@ -46,7 +46,10 @@ if (dbType === 'mysql') {
 
         pool = new Pool({
             connectionString: process.env.DATABASE_URL,
-            ssl: sslConfig
+            ssl: sslConfig,
+            connectionTimeoutMillis: 5000, // 5 seconds to give up if can't connect
+            idleTimeoutMillis: 30000,
+            max: 10 // Max connections for shared hosting environment
         });
         console.log('📦 Database: Initialized PostgreSQL connection pool with SSL [v2.0-FIXED]');
     } else {

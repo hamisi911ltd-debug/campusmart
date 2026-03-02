@@ -40,6 +40,8 @@ const initSchema = async () => {
         await db.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS contact_phone VARCHAR(20)`);
         await db.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS security_features TEXT`);
         await db.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS latitude DECIMAL(10, 8), ADD COLUMN IF NOT EXISTS longitude DECIMAL(11, 8)`);
+        await db.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS slug VARCHAR(255) UNIQUE`);
+        await db.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'available'`);
         console.log('✅ Database schema verified.');
     } catch (err) {
         console.error('❌ Schema initialization error:', err.message);
@@ -48,32 +50,35 @@ const initSchema = async () => {
 
 const app = express();
 
-// CORS configuration - allow Firebase and production domains
-const allowedOrigins = [
-    'http://localhost:5173',
-    'http://localhost:3000',
-    'https://campusmart.co.ke',
-    'https://www.campusmart.co.ke',
-    'https://campusmart-7d3d4.web.app',
-    'https://campusmart-7d3d4.firebaseapp.com'
-];
+// 1. ABSOLUTE FIRST MIDDLEWARE: Manual CORS Headers
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    const allowed = [
+        'http://localhost:5173',
+        'http://localhost:3000',
+        'https://campusmart.co.ke',
+        'https://www.campusmart.co.ke',
+        'https://campusmart-7d3d4.web.app',
+        'https://campusmart-7d3d4.firebaseapp.com'
+    ];
 
-app.use(cors({
-    origin: function (origin, callback) {
-        // Allow requests with no origin (mobile apps, Postman, etc.)
-        if (!origin) return callback(null, true);
+    if (allowed.includes(origin)) {
+        res.header('Access-Control-Allow-Origin', origin);
+        res.header('Access-Control-Allow-Credentials', 'true');
+    } else if (!origin) {
+        // Allow mobile apps/Postman
+    } else {
+        res.header('Access-Control-Allow-Origin', '*');
+    }
 
-        if (allowedOrigins.indexOf(origin) !== -1) {
-            callback(null, true);
-        } else {
-            console.log('CORS blocked origin:', origin);
-            callback(null, true); // Allow all for now, remove in production
-        }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Secret']
-}));
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Admin-Secret');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
+    next();
+});
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
@@ -383,7 +388,7 @@ app.get('/api/products', async (req, res) => {
         const result = await db.query(`
             SELECT p.id, p.title, p.category, p.price, p.location, p.image_url,
                    p.seller_id, p.condition_text as condition, p.description,
-                   p.created_at, p.views,
+                   p.created_at, p.views, p.slug, p.status,
                    u.full_name as seller_name, u.whatsapp, u.avatar_url as seller_avatar,
                    u.last_seen as seller_last_seen, 
                    u.boost_type,
@@ -395,6 +400,7 @@ app.get('/api/products', async (req, res) => {
             FROM products p 
             LEFT JOIN users u ON p.seller_id = u.id 
             WHERE (p.status = 'available' OR p.status IS NULL OR p.status = '')
+            AND p.is_approved = TRUE
             ORDER BY 
               CASE 
                 WHEN u.is_verified = TRUE AND (u.verified_until IS NULL OR u.verified_until >= NOW()) AND u.boost_type = 'power' THEN 2
@@ -433,9 +439,13 @@ app.post('/api/products', verifyToken, async (req, res) => {
         const { title, category, price, location, image_url, images, condition, description, latitude, longitude, metadata, contact_phone, security_features } = req.body;
         const seller_id = req.user.id;
 
-        console.log(`Creating product: ${title} with lat: ${latitude}, lng: ${longitude}`);
+        const slug = title.toLowerCase()
+            .replace(/[^\w ]+/g, '')
+            .replace(/ +/g, '-') + '-' + Math.random().toString(36).substring(2, 7);
+
+        console.log(`Creating product: ${title} with slug: ${slug}`);
         await db.query(
-            'INSERT INTO products (title, category, price, location, image_url, images, seller_id, condition_text, description, latitude, longitude, metadata, contact_phone, security_features) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)',
+            'INSERT INTO products (title, category, price, location, image_url, images, seller_id, condition_text, description, latitude, longitude, metadata, contact_phone, security_features, slug, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)',
             [
                 title,
                 category,
@@ -450,7 +460,9 @@ app.post('/api/products', verifyToken, async (req, res) => {
                 longitude === undefined ? null : longitude,
                 metadata || null,
                 contact_phone || null,
-                security_features || null
+                security_features || null,
+                slug,
+                'available'
             ]
         );
         logActivity(seller_id, 'product_create', { title });
@@ -1572,8 +1584,7 @@ app.get('/api/admin/community/posts', verifyAdminToken, async (req, res) => {
     } catch (error) {
         res.status(500).json({ message: 'Error fetching community posts' });
     }
-});
-
+})
 app.post('/api/admin/community/posts/:id/delete', verifyAdminToken, async (req, res) => {
     try {
         const { id } = req.params;
@@ -1619,18 +1630,52 @@ app.post('/api/admin/announcements', verifyAdminToken, async (req, res) => {
     }
 });
 
-const startServer = async () => {
+// ─── Crawler & SEO Routes ───────────────────────────────────────────────
+
+// Robots.txt
+app.get('/robots.txt', (req, res) => {
+    res.type('text/plain');
+    res.send(`User-agent: *\nAllow: /\nSitemap: ${process.env.APP_URL || 'https://campusmart.co.ke'}/sitemap.xml`);
+});
+
+// Basic Sitemap Route (JSON-based for frontend consumption or direct XML)
+app.get('/api/seo/sitemap', async (req, res) => {
     try {
-        await initSchema();
-        app.listen(PORT, () => {
-            console.log(`Server running on http://localhost:${PORT}`);
-            // Test M-Pesa credentials on startup so you know immediately if they're expired
-            // mpesaController.testCredentials();
+        const products = await db.query("SELECT slug, created_at FROM products WHERE is_approved = TRUE AND status = 'available'");
+        const baseUrl = process.env.APP_URL || 'https://campusmart.co.ke';
+
+        const urls = [
+            { loc: `${baseUrl}/`, lastmod: new Date().toISOString() },
+            { loc: `${baseUrl}/community`, lastmod: new Date().toISOString() },
+            { loc: `${baseUrl}/products`, lastmod: new Date().toISOString() }
+        ];
+
+        products.rows.forEach(p => {
+            if (p.slug) {
+                urls.push({
+                    loc: `${baseUrl}/product/${p.slug}`,
+                    lastmod: new Date(p.created_at).toISOString()
+                });
+            }
         });
-    } catch (err) {
-        console.error('Failed to start server:', err);
-        process.exit(1);
+
+        res.json(urls);
+    } catch (error) {
+        res.status(500).json({ message: 'Error generating sitemap data' });
     }
+});
+
+const startServer = async () => {
+    const listenTarget = process.env.PORT || 5000;
+
+    app.listen(listenTarget, () => {
+        console.log(`✅ CampusMart Server Live on ${listenTarget}`);
+
+        // Run database init in background so it doesn't block the site from opening
+        initSchema().catch(err => {
+            console.error('❌ Background Schema Init Error:', err);
+        });
+    });
 };
 
 startServer();
